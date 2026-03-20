@@ -1,33 +1,24 @@
-"""
-╔══════════════════════════════════════════╗
-║   POMODORO — Retro-Terminal Timer        ║
-║   Linux Mint: Sounds + Notifications     ║
-╚══════════════════════════════════════════╝
-
-DEPENDENCIES (all standard on Linux Mint):
-  - notify-send   (libnotify-bin)   → desktop popups
-  - paplay        (pulseaudio-utils) → audio playback
-  - Python stdlib: wave, struct, threading, csv
-
-Install if missing:
-  sudo apt install libnotify-bin pulseaudio-utils
-
-CHANGES vs original:
-  - Tick sound now only plays during BREAK modes (not during WORK/focus)
-  - Each completed session is logged to an in-memory list
-  - "💾 EXPORT CSV" button writes ~/pomodoro_log_YYYY-MM-DD.csv
-"""
-
 import tkinter as tk
 import math
-import subprocess
 import threading
 import wave
 import struct
 import tempfile
 import os
 import csv
+import winsound
+import subprocess
 from datetime import datetime, date
+import sys
+
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+logo_path = resource_path("logo.jpg")
 
 # ── Palette & Config ──────────────────────────────────────────────────────────
 BG        = "#0e0e14"
@@ -50,15 +41,6 @@ MODES = {
 
 RING_R, RING_W = 130, 14
 CX, CY, SIZE   = 200, 200, 400
-
-# ── System sound paths (freedesktop standard, present on Linux Mint) ──────────
-SOUND_DIR    = "/usr/share/sounds/freedesktop/stereo"
-SND_COMPLETE = os.path.join(SOUND_DIR, "complete.oga")
-SND_BELL     = os.path.join(SOUND_DIR, "bell.oga")
-SND_INFO     = os.path.join(SOUND_DIR, "dialog-information.oga")
-
-UBUNTU_DIR   = "/usr/share/sounds/ubuntu/stereo"
-SND_U_NOTIFY = os.path.join(UBUNTU_DIR, "message.ogg")
 
 
 # ── Audio helpers ─────────────────────────────────────────────────────────────
@@ -96,6 +78,8 @@ def _generate_done_wav(path: str, rate=44100):
 class SoundEngine:
     def __init__(self):
         self._muted = False
+
+        # Generate WAV files into temp paths
         self._tick_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         self._done_file = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         self._tick_path = self._tick_file.name
@@ -113,34 +97,34 @@ class SoundEngine:
         self._muted = not self._muted
         return self._muted
 
-    def _play(self, path):
+    def _play_wav(self, path: str):
+        """Play a WAV file asynchronously using winsound."""
         if self._muted:
             return
         threading.Thread(
-            target=lambda: subprocess.run(["aplay", "-q", path], stderr=subprocess.DEVNULL),
+            target=lambda: winsound.PlaySound(path, winsound.SND_FILENAME),
             daemon=True,
         ).start()
 
-    def _play_system(self, *candidates):
+    def _play_system_alias(self, alias: str):
+        """Play a named Windows system sound alias asynchronously."""
         if self._muted:
             return
-        for path in candidates:
-            if os.path.isfile(path):
-                threading.Thread(
-                    target=lambda p=path: subprocess.run(["paplay", p], stderr=subprocess.DEVNULL),
-                    daemon=True,
-                ).start()
-                return
-        self._play(self._done_path)
+        threading.Thread(
+            target=lambda: winsound.PlaySound(alias, winsound.SND_ALIAS),
+            daemon=True,
+        ).start()
 
     def tick(self):
-        self._play(self._tick_path)
+        self._play_wav(self._tick_path)
 
     def session_complete(self):
-        self._play_system(SND_COMPLETE, SND_BELL, SND_U_NOTIFY)
+        # "SystemAsterisk" → the Windows 'Asterisk' system sound (info chime)
+        self._play_system_alias("SystemAsterisk")
 
     def break_complete(self):
-        self._play_system(SND_INFO, SND_BELL, SND_U_NOTIFY)
+        # "SystemExclamation" → the Windows 'Exclamation' system sound
+        self._play_system_alias("SystemExclamation")
 
     def cleanup(self):
         for p in (self._tick_path, self._done_path):
@@ -151,12 +135,49 @@ class SoundEngine:
 
 
 # ── Desktop notification helper ───────────────────────────────────────────────
+# Uses PowerShell + System.Windows.Forms.NotifyIcon for a native balloon tip.
+# No third-party packages required.
+
+_NOTIFY_PS = """\
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$icon = [System.Drawing.SystemIcons]::{icon}
+$n = New-Object System.Windows.Forms.NotifyIcon
+$n.Icon = $icon
+$n.BalloonTipTitle = '{title}'
+$n.BalloonTipText  = '{body}'
+$n.BalloonTipIcon  = [System.Windows.Forms.ToolTipIcon]::{tipicon}
+$n.Visible = $true
+$n.ShowBalloonTip(4000)
+Start-Sleep -Milliseconds 4500
+$n.Dispose()
+"""
 
 def _notify(title: str, body: str, urgency: str = "normal", icon: str = "appointment"):
+    # Map Linux urgency/icon hints to Windows equivalents
+    tip_icon_map = {"low": "None", "normal": "Info", "critical": "Warning"}
+    sys_icon_map = {"appointment": "Information", "media-playback-pause": "Question"}
+
+    tip_icon = tip_icon_map.get(urgency, "Info")
+    sys_icon = sys_icon_map.get(icon, "Information")
+
+    # Escape single quotes for PowerShell string safety
+    safe_title = title.replace("'", "`'")
+    safe_body  = body.replace("'", "`'").replace("\n", " ")
+
+    script = _NOTIFY_PS.format(
+        icon=sys_icon,
+        title=safe_title,
+        body=safe_body,
+        tipicon=tip_icon,
+    )
+
     threading.Thread(
         target=lambda: subprocess.run(
-            ["notify-send", "-u", urgency, "-i", icon, "-t", "4000", title, body],
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script],
             stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,  # Suppress console flash
         ),
         daemon=True,
     ).start()
@@ -168,7 +189,7 @@ class SessionEntry:
     def __init__(self, mode: str, start: datetime):
         self.mode      = mode
         self.start     = start
-        self.end       = None          # filled on completion
+        self.end       = None
         self.completed = False
 
     def finish(self):
@@ -322,10 +343,8 @@ class PomodoroApp(tk.Tk):
             self._running = False
             if self._after_id:
                 self.after_cancel(self._after_id)
-            # Pause: mark current session as interrupted (don't log it yet)
         else:
             self._running = True
-            # Start a new session entry if we don't have one already
             if self._current_session is None:
                 self._current_session = SessionEntry(self._current_mode, datetime.now())
             self._tick()
@@ -338,7 +357,6 @@ class PomodoroApp(tk.Tk):
             return
         self._remaining -= 1
 
-        # FIX: tick sound only during breaks, not during focus/work sessions
         if self._tick_enabled and self._current_mode != "WORK":
             self._snd.tick()
 
@@ -348,7 +366,6 @@ class PomodoroApp(tk.Tk):
     def _on_complete(self):
         self.bell()
 
-        # Finalise the current session entry
         if self._current_session is not None:
             self._current_session.finish()
             self._session_log.append(self._current_session)
@@ -361,7 +378,7 @@ class PomodoroApp(tk.Tk):
                 next_m = "LONG BREAK"
                 _notify(
                     "🍅 Pomodoro — Long Break!",
-                    f"Session {self._work_sessions_count} complete.\nTime for a 15-minute rest.",
+                    f"Session {self._work_sessions_count} complete. Time for a 15-minute rest.",
                     urgency="normal", icon="media-playback-pause",
                 )
             else:
@@ -387,7 +404,7 @@ class PomodoroApp(tk.Tk):
         self._current_mode = mode_name
         self._total        = MODES[mode_name]
         self._remaining    = self._total
-        self._current_session = None   # fresh entry will be created on next start
+        self._current_session = None
 
         if mode_name == "WORK":
             self._color = TOMATO
