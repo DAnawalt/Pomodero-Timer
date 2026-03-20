@@ -1,0 +1,5 @@
+Package: pomodero
+Version: 1.0.0
+Architecture: amd64
+Maintainer: Dillon Anawalt <dillonjackanawalt@gmail.com>
+Description: Pomodero Timer app

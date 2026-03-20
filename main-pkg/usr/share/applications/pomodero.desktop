@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Pomodero Timer
+Comment=Pomodoro timer app
+Exec=/usr/bin/pomodero
+Icon=pomodero
+Terminal=false
+Type=Application
+Categories=Utility;
