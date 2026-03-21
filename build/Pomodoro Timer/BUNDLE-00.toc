@@ -1,0 +1,3 @@
+([('Pomodoro Timer',
+   '/Users/kevinanawalt/PycharmProjects/Pomodero-Timer/dist/Pomodoro Timer',
+   'EXECUTABLE')],)
